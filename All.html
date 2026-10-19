@@ -1,0 +1,894 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CPU Instruction Cycle Simulator (Fetch - Decode - Execute)</title>
+
+<!--
+  =====================================================================
+  COA - CO5 MICRO PROJECT
+  Topic   : CPU instruction cycle (fetch, decode, execute)
+  Tool    : HTML + CSS + JavaScript (runs in any browser, no install)
+  How to run: just double-click this file.
+
+  HOW THIS FILE IS ORGANISED
+    1. CSS         -> colours and layout
+    2. HTML        -> controls, block diagram, memory table, log
+    3. JavaScript  -> the simulator itself
+         a) Instruction set      (the opcodes our tiny CPU understands)
+         b) Assembler            (turns text like "LOAD 10" into numbers)
+         c) CPU state            (PC, MAR, MDR, IR, ACC, flags, memory)
+         d) Micro-operations     (fetch / decode / execute steps)
+         e) Screen drawing       (show registers, memory, log)
+         f) Buttons              (Step, Run, Reset ...)
+  =====================================================================
+-->
+
+<style>
+  :root {
+    --bg: #eef2f1;
+    --card: #ffffff;
+    --text: #17262b;
+    --muted: #5d6f75;
+    --line: #cfd9d8;
+    --fetch: #12806f;
+    --decode: #b8700a;
+    --exec: #c2412d;
+    --hot-bg: #fff1b8;
+    --pc-bg: #d8f1e8;
+    --btn: #17262b;
+    --btn-text: #ffffff;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1719;
+      --card: #172225;
+      --text: #e4eeee;
+      --muted: #93a6ab;
+      --line: #2b3b3f;
+      --fetch: #3cc4ac;
+      --decode: #f0a93a;
+      --exec: #f2705c;
+      --hot-bg: #4d4212;
+      --pc-bg: #173a31;
+      --btn: #e4eeee;
+      --btn-text: #0f1719;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "Segoe UI", Tahoma, Arial, sans-serif;
+    line-height: 1.45;
+  }
+  .mono { font-family: Consolas, "Courier New", monospace; }
+
+  header { padding: 22px 24px 8px; max-width: 1280px; margin: 0 auto; }
+  header h1 { margin: 0; font-size: 1.6rem; letter-spacing: -0.01em; }
+  header p { margin: 4px 0 0; color: var(--muted); }
+
+  main {
+    max-width: 1280px; margin: 0 auto; padding: 12px 24px 40px;
+    display: grid; gap: 16px;
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 14px 16px;
+  }
+  .card h2 { margin: 0 0 10px; font-size: 1.02rem; }
+
+  /* ---------- controls ---------- */
+  .controls { display: flex; flex-wrap: wrap; gap: 14px 22px; align-items: flex-end; }
+  .field { display: flex; flex-direction: column; gap: 4px; font-size: 0.85rem; color: var(--muted); }
+  select, input[type=range] { font: inherit; color: var(--text); }
+  select {
+    padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--card);
+  }
+  .buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+  button {
+    font: inherit; font-weight: 600; cursor: pointer;
+    padding: 8px 14px; border-radius: 6px;
+    border: 1px solid var(--btn); background: var(--btn); color: var(--btn-text);
+  }
+  button.secondary { background: transparent; color: var(--text); border-color: var(--line); }
+  button:focus-visible, select:focus-visible, textarea:focus-visible {
+    outline: 3px solid var(--decode); outline-offset: 2px;
+  }
+
+  /* ---------- two-column layout ---------- */
+  .row { display: grid; grid-template-columns: minmax(280px, 380px) 1fr; gap: 16px; }
+  .row2 { display: grid; grid-template-columns: minmax(300px, 420px) 1fr; gap: 16px; }
+  @media (max-width: 900px) { .row, .row2 { grid-template-columns: 1fr; } }
+
+  textarea {
+    width: 100%; height: 300px; resize: vertical;
+    font-family: Consolas, "Courier New", monospace; font-size: 0.9rem;
+    padding: 8px; border: 1px solid var(--line); border-radius: 6px;
+    background: var(--bg); color: var(--text);
+  }
+  #msg { margin-top: 8px; min-height: 1.3em; font-size: 0.88rem; }
+  #msg.error { color: var(--exec); font-weight: 600; }
+  #msg.ok { color: var(--fetch); }
+
+  details { margin-top: 10px; font-size: 0.86rem; }
+  details summary { cursor: pointer; font-weight: 600; }
+  table { border-collapse: collapse; width: 100%; font-size: 0.86rem; }
+  th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; background: var(--card); position: sticky; top: 0; }
+
+  /* ---------- phase pills ---------- */
+  .phases { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 10px; }
+  .pill {
+    padding: 4px 14px; border-radius: 999px; border: 2px solid var(--line);
+    font-weight: 700; font-size: 0.85rem; color: var(--muted);
+  }
+  .pill.active.FETCH   { border-color: var(--fetch);  background: var(--fetch);  color: #fff; }
+  .pill.active.DECODE  { border-color: var(--decode); background: var(--decode); color: #fff; }
+  .pill.active.EXECUTE { border-color: var(--exec);   background: var(--exec);   color: #fff; }
+  .arrow { color: var(--muted); }
+
+  .now {
+    border-left: 5px solid var(--line); padding: 8px 12px; margin-bottom: 12px;
+    background: var(--bg); border-radius: 4px; min-height: 64px;
+  }
+  .now.FETCH { border-color: var(--fetch); }
+  .now.DECODE { border-color: var(--decode); }
+  .now.EXECUTE { border-color: var(--exec); }
+  .now .op { font-weight: 700; font-size: 1.05rem; }
+  .now .detail { color: var(--muted); font-size: 0.9rem; }
+
+  /* ---------- block diagram ---------- */
+  .diagram { display: grid; gap: 10px; }
+  .cpu {
+    border: 2px solid var(--text); border-radius: 10px; padding: 10px 12px 12px;
+  }
+  .cpu-title { font-weight: 700; margin-bottom: 8px; }
+  .cpu-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
+  @media (max-width: 640px) { .cpu-grid { grid-template-columns: repeat(2, 1fr); } }
+  .comp {
+    border: 1.5px solid var(--line); border-radius: 8px; padding: 6px 8px;
+    background: var(--card); transition: background 0.15s, border-color 0.15s;
+    min-width: 0;
+  }
+  .comp .name { font-size: 0.78rem; color: var(--muted); }
+  .comp .val { font-family: Consolas, "Courier New", monospace; font-size: 1.05rem; font-weight: 700; word-break: break-all; }
+  .comp.small .val { font-size: 0.8rem; }
+  .comp.hot { background: var(--hot-bg); border-color: var(--decode); }
+  .bus {
+    text-align: center; color: var(--muted); font-size: 0.82rem;
+    border-top: 2px dashed var(--line); border-bottom: 2px dashed var(--line); padding: 3px 0;
+  }
+  .comp.wide { grid-column: span 2; }
+
+  .stats { display: flex; flex-wrap: wrap; gap: 8px 22px; margin-top: 10px; font-size: 0.9rem; }
+  .stats b { font-family: Consolas, "Courier New", monospace; }
+  #status.err { color: var(--exec); font-weight: 700; }
+
+  /* ---------- memory + log ---------- */
+  .scrollbox { max-height: 360px; overflow: auto; position: relative; border: 1px solid var(--line); border-radius: 6px; }
+  tr.pc td { background: var(--pc-bg); font-weight: 700; }
+  tr.mar td:first-child { box-shadow: inset 4px 0 0 var(--decode); }
+  tr.written td { background: var(--hot-bg); }
+  .tag { font-weight: 700; font-size: 0.78rem; }
+  .tag.FETCH { color: var(--fetch); } .tag.DECODE { color: var(--decode); } .tag.EXECUTE { color: var(--exec); }
+  .legend { font-size: 0.8rem; color: var(--muted); margin-top: 6px; }
+  #output { font-family: Consolas, "Courier New", monospace; font-size: 1.05rem; min-height: 1.6em; }
+
+  footer { max-width: 1280px; margin: 0 auto; padding: 0 24px 30px; color: var(--muted); font-size: 0.85rem; }
+</style>
+</head>
+
+<body>
+<header>
+  <h1>CPU Instruction Cycle Simulator</h1>
+  <p>Watch a small CPU fetch, decode and execute each instruction, one micro-step at a time.</p>
+  <p>Submitted by: <b>Shardul Gorde</b> &nbsp;|&nbsp; PRn No: <b> 2125UIDM1039 </b> &nbsp;|&nbsp; SY CSE, Computer Organization and Architecture</p>
+</header>
+
+<main>
+
+  <!-- ===================== CONTROLS ===================== -->
+  <section class="card">
+    <div class="controls">
+      <label class="field">Example program
+        <select id="example"></select>
+      </label>
+      <label class="field">Memory size (words)
+        <select id="memSize">
+          <option value="16">16</option>
+          <option value="32" selected>32</option>
+          <option value="64">64</option>
+        </select>
+      </label>
+      <label class="field">Number format
+        <select id="radix">
+          <option value="dec">Decimal</option>
+          <option value="hex">Hexadecimal</option>
+          <option value="bin">Binary (16-bit)</option>
+        </select>
+      </label>
+      <label class="field">Run speed: <span id="speedLabel">5</span>
+        <input type="range" id="speed" min="1" max="10" value="5">
+      </label>
+      <div class="buttons">
+        <button id="stepBtn" title="Run one micro-operation (one clock cycle)">Step (1 clock)</button>
+        <button id="instrBtn" class="secondary" title="Run a full fetch-decode-execute cycle">Next instruction</button>
+        <button id="runBtn" class="secondary">Run</button>
+        <button id="resetBtn" class="secondary">Reset</button>
+      </div>
+    </div>
+  </section>
+
+  <div class="row">
+    <!-- ===================== PROGRAM INPUT ===================== -->
+    <section class="card">
+      <h2>Program (input)</h2>
+      <textarea id="code" spellcheck="false" aria-label="Assembly program"></textarea>
+      <div class="buttons" style="margin-top:8px">
+        <button id="loadBtn">Load program into memory</button>
+      </div>
+      <div id="msg"></div>
+
+      <details>
+        <summary>Instruction set of this CPU</summary>
+        <table>
+          <tr><th>Instruction</th><th>Opcode</th><th>What it does</th></tr>
+          <tr><td class="mono">HALT</td><td>0</td><td>Stop the CPU</td></tr>
+          <tr><td class="mono">LOAD a</td><td>1</td><td>ACC ← Memory[a]</td></tr>
+          <tr><td class="mono">STORE a</td><td>2</td><td>Memory[a] ← ACC</td></tr>
+          <tr><td class="mono">ADD a</td><td>3</td><td>ACC ← ACC + Memory[a]</td></tr>
+          <tr><td class="mono">SUB a</td><td>4</td><td>ACC ← ACC − Memory[a]</td></tr>
+          <tr><td class="mono">JMP a</td><td>5</td><td>PC ← a</td></tr>
+          <tr><td class="mono">JZ a</td><td>6</td><td>If Zero flag = 1, PC ← a</td></tr>
+          <tr><td class="mono">LDI n</td><td>7</td><td>ACC ← n (immediate value)</td></tr>
+          <tr><td class="mono">OUT</td><td>8</td><td>Show ACC in the output box</td></tr>
+        </table>
+        <p>Each instruction is stored as one memory word: <b>opcode × 100 + operand</b>.
+        Example: <span class="mono">LOAD 10</span> is stored as 110.
+        Use <span class="mono">DATA address value</span> to put a starting value in memory,
+        <span class="mono">label:</span> to name a line, and <span class="mono">;</span> for comments.</p>
+      </details>
+
+      <details>
+        <summary>Theory: the instruction cycle</summary>
+        <p><b>Fetch</b>: the CPU copies the address in PC to MAR, reads that memory word into MDR,
+        moves it to IR, and increments PC.</p>
+        <p><b>Decode</b>: the control unit splits IR into an opcode and an operand and decides what to do.</p>
+        <p><b>Execute</b>: the CPU carries out the instruction (memory access, ALU operation, jump or output).
+        Then the cycle repeats with the next instruction.</p>
+      </details>
+    </section>
+
+    <!-- ===================== BLOCK DIAGRAM ===================== -->
+    <section class="card">
+      <h2>CPU block diagram (live)</h2>
+
+      <div class="phases">
+        <span class="pill FETCH" id="pill-FETCH">1. Fetch</span><span class="arrow">→</span>
+        <span class="pill DECODE" id="pill-DECODE">2. Decode</span><span class="arrow">→</span>
+        <span class="pill EXECUTE" id="pill-EXECUTE">3. Execute</span><span class="arrow">↺ repeat</span>
+      </div>
+
+      <div class="now" id="now">
+        <div class="op">Ready</div>
+        <div class="detail">Press Step to begin the first fetch.</div>
+      </div>
+
+      <div class="diagram">
+        <div class="cpu">
+          <div class="cpu-title">CPU</div>
+          <div class="cpu-grid">
+            <div class="comp" id="c-PC"><div class="name">PC (program counter)</div><div class="val" id="v-PC">0</div></div>
+            <div class="comp" id="c-MAR"><div class="name">MAR (memory address)</div><div class="val" id="v-MAR">0</div></div>
+            <div class="comp" id="c-MDR"><div class="name">MDR (memory data)</div><div class="val" id="v-MDR">0</div></div>
+            <div class="comp" id="c-IR"><div class="name">IR (instruction register)</div><div class="val" id="v-IR">0</div></div>
+
+            <div class="comp wide" id="c-CU"><div class="name">Control unit</div><div class="val small" id="v-CU" style="font-size:0.9rem">idle</div></div>
+            <div class="comp" id="c-ALU"><div class="name">ALU</div><div class="val" id="v-ALU" style="font-size:0.9rem">idle</div></div>
+            <div class="comp" id="c-ACC"><div class="name">ACC (accumulator)</div><div class="val" id="v-ACC">0</div></div>
+
+            <div class="comp wide" id="c-FLAGS"><div class="name">Flags</div><div class="val" id="v-FLAGS" style="font-size:0.95rem">Z=0 N=0</div></div>
+            <div class="comp wide" id="c-OUT"><div class="name">Output port</div><div class="val" id="v-OUT" style="font-size:0.95rem">-</div></div>
+          </div>
+        </div>
+        <div class="bus">address bus / data bus / control bus</div>
+        <div class="comp" id="c-MEM"><div class="name">Main memory is shown in the table below. It lights up when read or written.</div></div>
+      </div>
+
+      <div class="stats">
+        <span>Status: <b id="status">Ready</b></span>
+        <span>Clock cycles: <b id="s-cycles">0</b></span>
+        <span>Instructions done: <b id="s-instr">0</b></span>
+        <span>Cycles per instruction: <b id="s-cpi">-</b></span>
+      </div>
+    </section>
+  </div>
+
+  <div class="row2">
+    <!-- ===================== MEMORY ===================== -->
+    <section class="card">
+      <h2>Main memory</h2>
+      <div class="scrollbox" id="memBox">
+        <table>
+          <thead><tr><th>Address</th><th>Value</th><th>Meaning</th></tr></thead>
+          <tbody id="memBody"></tbody>
+        </table>
+      </div>
+      <div class="legend">Green row = PC points here. Yellow row = just written. Orange left edge = MAR.</div>
+      <h2 style="margin-top:14px">Output</h2>
+      <div id="output">-</div>
+    </section>
+
+    <!-- ===================== LOG ===================== -->
+    <section class="card">
+      <h2>Step-by-step log</h2>
+      <div class="scrollbox" id="logBox">
+        <table>
+          <thead><tr><th>Clock</th><th>Instr</th><th>Phase</th><th>Micro-operation</th><th>Result</th></tr></thead>
+          <tbody id="logBody"></tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+</main>
+
+<footer>Every clock cycle in this simulator is one micro-operation. A real CPU does the same work with electrical signals.</footer>
+
+<script>
+/* =====================================================================
+   (a) INSTRUCTION SET
+   ===================================================================== */
+const CUSTOM = '__custom__';   // dropdown value used after you edit the program
+const OPS = ['HALT', 'LOAD', 'STORE', 'ADD', 'SUB', 'JMP', 'JZ', 'LDI', 'OUT'];
+// position in this list = opcode number (HALT = 0, LOAD = 1, ...)
+
+const EXAMPLES = {
+  'Add two numbers (25 + 17)':
+`; Add two numbers stored in memory
+LOAD 10     ; ACC = Memory[10]
+ADD 11      ; ACC = ACC + Memory[11]
+STORE 12    ; Memory[12] = ACC
+OUT         ; show the answer
+HALT
+
+DATA 10 25
+DATA 11 17`,
+
+  'Sum of 1 to 5 (loop)':
+`; sum = 5 + 4 + 3 + 2 + 1
+; Memory[30] = sum, Memory[31] = n, Memory[32] = 1
+start:
+LOAD 30
+ADD 31      ; sum = sum + n
+STORE 30
+LOAD 31
+SUB 32      ; n = n - 1  (sets the Zero flag)
+STORE 31
+JZ done     ; if n became 0, finish
+JMP start   ; otherwise repeat
+done:
+LOAD 30
+OUT
+HALT
+
+DATA 30 0
+DATA 31 5
+DATA 32 1`,
+
+  'Multiply 6 x 4 (repeated addition)':
+`; result = 6 added 4 times
+; Memory[30] = result, 31 = number, 32 = counter, 33 = 1
+loop:
+LOAD 30
+ADD 31      ; result = result + number
+STORE 30
+LOAD 32
+SUB 33      ; counter = counter - 1
+STORE 32
+JZ end
+JMP loop
+end:
+LOAD 30
+OUT
+HALT
+
+DATA 30 0
+DATA 31 6
+DATA 32 4
+DATA 33 1`,
+
+  'Immediate value and jump':
+`; Load a constant, output it, skip one instruction
+LDI 42      ; ACC = 42
+OUT
+JMP skip
+LDI 99      ; this line is jumped over
+OUT
+skip:
+LDI 7
+OUT
+HALT`
+};
+
+/* =====================================================================
+   (b) ASSEMBLER: text program -> numbers in memory
+   ===================================================================== */
+function assemble(text, size) {
+  const lines = text.split('\n');
+  const instrs = [];     // list of instructions found
+  const datas = [];      // list of DATA lines
+  const labels = {};     // label name -> address
+  let addr = 0;
+
+  // ---- Pass 1: read every line, remember labels ----
+  for (let i = 0; i < lines.length; i++) {
+    let line = lines[i].split(';')[0].trim();        // remove comment
+    if (line === '') continue;
+    const n = i + 1;                                  // line number for error messages
+
+    const m = line.match(/^([A-Za-z_]\w*):\s*(.*)$/); // "name: rest"
+    if (m) {
+      labels[m[1].toUpperCase()] = addr;
+      line = m[2].trim();
+      if (line === '') continue;
+    }
+
+    const parts = line.split(/\s+/);
+    const op = parts[0].toUpperCase();
+
+    if (op === 'DATA') {
+      if (parts.length !== 3) return { error: 'Line ' + n + ': write DATA address value' };
+      datas.push({ n: n, a: Number(parts[1]), v: Number(parts[2]) });
+      continue;
+    }
+    if (!OPS.includes(op)) return { error: 'Line ' + n + ': unknown instruction "' + parts[0] + '"' };
+
+    const needsOperand = (op !== 'HALT' && op !== 'OUT');
+    if (needsOperand && parts.length !== 2) return { error: 'Line ' + n + ': ' + op + ' needs one operand' };
+    if (!needsOperand && parts.length !== 1) return { error: 'Line ' + n + ': ' + op + ' takes no operand' };
+
+    instrs.push({ n: n, op: op, arg: parts[1], addr: addr });
+    addr++;
+  }
+
+  if (instrs.length > size) {
+    return { error: 'Program has ' + instrs.length + ' instructions but memory has only ' + size + ' words.' };
+  }
+
+  // ---- Pass 2: turn each instruction into a number ----
+  const image = new Array(size).fill(0);
+  for (const ins of instrs) {
+    let operand = 0;
+    if (ins.arg !== undefined) {
+      const key = ins.arg.toUpperCase();
+      operand = (key in labels) ? labels[key] : Number(ins.arg);
+      if (!Number.isInteger(operand) || operand < 0 || operand > 99) {
+        return { error: 'Line ' + ins.n + ': operand "' + ins.arg + '" must be a whole number from 0 to 99 or a label.' };
+      }
+      if (ins.op !== 'LDI' && operand >= size) {
+        return { error: 'Line ' + ins.n + ': address ' + operand + ' is outside memory (0 to ' + (size - 1) + '). Choose a bigger memory size.' };
+      }
+    }
+    image[ins.addr] = OPS.indexOf(ins.op) * 100 + operand;
+  }
+
+  // ---- DATA lines ----
+  for (const d of datas) {
+    if (!Number.isInteger(d.a) || d.a < 0 || d.a >= size) {
+      return { error: 'Line ' + d.n + ': DATA address ' + d.a + ' is outside memory (0 to ' + (size - 1) + '). Choose a bigger memory size.' };
+    }
+    if (d.a < instrs.length) return { error: 'Line ' + d.n + ': DATA address ' + d.a + ' overlaps the program.' };
+    if (!Number.isInteger(d.v) || d.v < -9999 || d.v > 9999) {
+      return { error: 'Line ' + d.n + ': DATA value must be a whole number from -9999 to 9999.' };
+    }
+    image[d.a] = d.v;
+  }
+
+  return { image: image, progLen: instrs.length };
+}
+
+/* =====================================================================
+   (c) CPU STATE
+   ===================================================================== */
+const $ = (id) => document.getElementById(id);
+
+let memSize = 32;     // number of memory words
+let image = [];       // memory contents right after loading the program
+let progLen = 0;      // how many words are instructions
+let cpu = null;       // the CPU (registers, memory, queue ...)
+let timer = null;     // used by the Run button
+
+function resetCPU() {
+  stopRun();
+  cpu = {
+    PC: 0, MAR: 0, MDR: 0, IR: 0, ACC: 0,
+    Z: 0, N: 0,                  // flags: Zero and Negative
+    mem: image.slice(),          // copy of memory
+    queue: [],                   // micro-operations waiting to run
+    halted: false,
+    error: '',
+    cycles: 0,                   // clock cycles used
+    instr: 0,                    // instructions completed
+    out: [],                     // values sent to the output port
+    phase: '',
+    hot: [],                     // components active in the last step
+    written: -1,                 // memory address written in the last step
+    nowOp: 'Ready',
+    nowDetail: 'Press Step to begin the first fetch.'
+  };
+  $('logBody').innerHTML = '';
+  render();
+}
+
+function fail(message) {
+  cpu.halted = true;
+  cpu.error = message;
+  cpu.queue = [];
+  stopRun();
+}
+
+function setFlags() {
+  cpu.Z = (cpu.ACC === 0) ? 1 : 0;
+  cpu.N = (cpu.ACC < 0) ? 1 : 0;
+}
+
+function addressOK() {
+  if (cpu.MAR < 0 || cpu.MAR >= memSize) {
+    fail('Address ' + cpu.MAR + ' is outside memory (0 to ' + (memSize - 1) + ').');
+    return false;
+  }
+  return true;
+}
+
+/* =====================================================================
+   (d) MICRO-OPERATIONS
+   Each micro-operation = one clock cycle.
+   It has: phase, text, hot (components to light up), run() (what it does)
+   ===================================================================== */
+
+// ---- FETCH: always the same 4 steps ----
+function fetchOps() {
+  return [
+    { phase: 'FETCH', text: 'MAR ← PC', hot: ['PC', 'MAR'],
+      run() { cpu.MAR = cpu.PC; return 'MAR = ' + cpu.MAR; } },
+
+    { phase: 'FETCH', text: 'MDR ← Memory[MAR]', hot: ['MAR', 'MEM', 'MDR'],
+      run() {
+        if (!addressOK()) return 'PC points outside memory';
+        cpu.MDR = cpu.mem[cpu.MAR];
+        return 'Read word ' + cpu.MDR + ' from address ' + cpu.MAR;
+      } },
+
+    { phase: 'FETCH', text: 'IR ← MDR', hot: ['MDR', 'IR'],
+      run() { cpu.IR = cpu.MDR; return 'IR = ' + cpu.IR; } },
+
+    { phase: 'FETCH', text: 'PC ← PC + 1', hot: ['PC'],
+      run() { cpu.PC = cpu.PC + 1; return 'PC now points to the next instruction (' + cpu.PC + ')'; } }
+  ];
+}
+
+// ---- DECODE: split IR into opcode and operand, then queue the EXECUTE steps ----
+function decodeOp() {
+  return { phase: 'DECODE', text: 'Decode IR into opcode and operand', hot: ['IR', 'CU'],
+    run() {
+      const word = cpu.IR;
+      const opcode = Math.floor(word / 100);
+      const operand = word % 100;
+      if (word < 0 || opcode >= OPS.length) {
+        fail('Illegal instruction ' + word + ' at address ' + (cpu.PC - 1) + '. The CPU tried to run data as an instruction.');
+        return 'Opcode ' + opcode + ' does not exist';
+      }
+      const name = OPS[opcode];
+      cpu.queue.push(...executeOps(name, operand));
+      return 'IR ' + word + ' → opcode ' + opcode + ' (' + name + '), operand ' + operand;
+    } };
+}
+
+// ---- EXECUTE: different steps for each instruction ----
+function executeOps(name, a) {
+  const E = 'EXECUTE';
+
+  // small reusable steps
+  const putAddress = () => ({ phase: E, text: 'MAR ← ' + a + ' (operand)', hot: ['IR', 'CU', 'MAR'],
+    run() { cpu.MAR = a; return 'MAR = ' + a; } });
+
+  const readMemory = () => ({ phase: E, text: 'MDR ← Memory[MAR]', hot: ['MAR', 'MEM', 'MDR'],
+    run() {
+      if (!addressOK()) return 'Bad address';
+      cpu.MDR = cpu.mem[cpu.MAR];
+      return 'Read ' + cpu.MDR + ' from address ' + cpu.MAR;
+    } });
+
+  switch (name) {
+    case 'LOAD':
+      return [putAddress(), readMemory(),
+        { phase: E, text: 'ACC ← MDR', hot: ['MDR', 'ACC', 'FLAGS'],
+          run() { cpu.ACC = cpu.MDR; setFlags(); return 'ACC = ' + cpu.ACC; } }];
+
+    case 'STORE':
+      return [putAddress(),
+        { phase: E, text: 'MDR ← ACC', hot: ['ACC', 'MDR'],
+          run() { cpu.MDR = cpu.ACC; return 'MDR = ' + cpu.MDR; } },
+        { phase: E, text: 'Memory[MAR] ← MDR', hot: ['MDR', 'MAR', 'MEM'],
+          run() {
+            if (!addressOK()) return 'Bad address';
+            cpu.mem[cpu.MAR] = cpu.MDR;
+            cpu.written = cpu.MAR;
+            return 'Wrote ' + cpu.MDR + ' to address ' + cpu.MAR;
+          } }];
+
+    case 'ADD':
+      return [putAddress(), readMemory(),
+        { phase: E, text: 'ACC ← ACC + MDR (ALU adds)', hot: ['ACC', 'MDR', 'ALU', 'FLAGS'],
+          run() {
+            const before = cpu.ACC;
+            cpu.ACC = cpu.ACC + cpu.MDR; setFlags();
+            return before + ' + ' + cpu.MDR + ' = ' + cpu.ACC;
+          } }];
+
+    case 'SUB':
+      return [putAddress(), readMemory(),
+        { phase: E, text: 'ACC ← ACC − MDR (ALU subtracts)', hot: ['ACC', 'MDR', 'ALU', 'FLAGS'],
+          run() {
+            const before = cpu.ACC;
+            cpu.ACC = cpu.ACC - cpu.MDR; setFlags();
+            return before + ' − ' + cpu.MDR + ' = ' + cpu.ACC;
+          } }];
+
+    case 'JMP':
+      return [{ phase: E, text: 'PC ← ' + a + ' (jump)', hot: ['IR', 'CU', 'PC'],
+        run() { cpu.PC = a; return 'PC = ' + a; } }];
+
+    case 'JZ':
+      return [{ phase: E, text: 'If Z = 1 then PC ← ' + a, hot: ['FLAGS', 'CU', 'PC'],
+        run() {
+          if (cpu.Z === 1) { cpu.PC = a; return 'Z = 1, so the jump is taken. PC = ' + a; }
+          return 'Z = 0, so no jump. PC stays ' + cpu.PC;
+        } }];
+
+    case 'LDI':
+      return [{ phase: E, text: 'ACC ← ' + a + ' (immediate value)', hot: ['IR', 'CU', 'ACC', 'FLAGS'],
+        run() { cpu.ACC = a; setFlags(); return 'ACC = ' + a; } }];
+
+    case 'OUT':
+      return [{ phase: E, text: 'Output ← ACC', hot: ['ACC', 'OUT'],
+        run() { cpu.out.push(cpu.ACC); return 'Output shows ' + cpu.ACC; } }];
+
+    case 'HALT':
+      return [{ phase: E, text: 'HALT: stop the CPU', hot: ['CU'],
+        run() {
+          cpu.halted = true; cpu.queue = []; cpu.instr++;
+          return 'Program finished';
+        } }];
+  }
+  return [];
+}
+
+// ---- run ONE micro-operation (one clock cycle) ----
+function microStep() {
+  if (cpu.halted) return false;
+  if (cpu.cycles >= 5000) {
+    fail('Stopped after 5000 clock cycles. The program may be in an infinite loop.');
+    render();
+    return false;
+  }
+
+  // When nothing is waiting, a new instruction cycle starts with FETCH
+  if (cpu.queue.length === 0) {
+    cpu.queue = [...fetchOps(), decodeOp()];
+  }
+
+  const op = cpu.queue.shift();
+  cpu.cycles++;
+  cpu.written = -1;
+  cpu.phase = op.phase;
+  cpu.hot = op.hot;
+
+  const result = op.run() || '';
+  cpu.nowOp = op.text;
+  cpu.nowDetail = result;
+
+  addLog(op.phase, op.text, result);
+
+  // all steps of this instruction are finished
+  if (!cpu.halted && cpu.queue.length === 0) cpu.instr++;
+
+  render();
+  return true;
+}
+
+/* =====================================================================
+   (e) DRAWING THE SCREEN
+   ===================================================================== */
+
+// show a number as decimal, hex or binary depending on the dropdown
+function fmt(v) {
+  const mode = $('radix').value;
+  if (mode === 'hex') return '0x' + (v & 0xFFFF).toString(16).toUpperCase().padStart(4, '0');
+  if (mode === 'bin') return (v & 0xFFFF).toString(2).padStart(16, '0');
+  return String(v);
+}
+
+// write a memory word as text, e.g. 110 -> "LOAD 10"
+function meaning(word, address) {
+  if (address >= progLen) return 'data';
+  const opcode = Math.floor(word / 100);
+  const operand = word % 100;
+  if (opcode < 0 || opcode >= OPS.length) return 'data';
+  const name = OPS[opcode];
+  return (name === 'HALT' || name === 'OUT') ? name : name + ' ' + operand;
+}
+
+function addLog(phase, text, result) {
+  const row = document.createElement('tr');
+  // HALT already counted itself, so it must not get +1
+  const instrNo = (cpu.halted && cpu.error === '' && text.startsWith('HALT')) ? cpu.instr : cpu.instr + 1;
+  row.innerHTML =
+    '<td>' + cpu.cycles + '</td>' +
+    '<td>' + instrNo + '</td>' +
+    '<td><span class="tag ' + phase + '">' + phase + '</span></td>' +
+    '<td class="mono">' + text + '</td>' +
+    '<td>' + result + '</td>';
+  $('logBody').appendChild(row);
+  const box = $('logBox');
+  box.scrollTop = box.scrollHeight;
+}
+
+function render() {
+  // registers
+  $('v-PC').textContent = fmt(cpu.PC);
+  $('v-MAR').textContent = fmt(cpu.MAR);
+  $('v-MDR').textContent = fmt(cpu.MDR);
+  $('v-IR').textContent = fmt(cpu.IR);
+  $('v-ACC').textContent = fmt(cpu.ACC);
+  $('v-FLAGS').textContent = 'Z=' + cpu.Z + '  N=' + cpu.N;
+  $('v-OUT').textContent = cpu.out.length ? cpu.out[cpu.out.length - 1] : '-';
+
+  // control unit and ALU text
+  $('v-CU').textContent = cpu.phase === '' ? 'idle' : cpu.phase.toLowerCase() + ' phase';
+  $('v-ALU').textContent = cpu.hot.includes('ALU') ? 'working' : 'idle';
+
+  // highlight the components used in the last micro-operation
+  document.querySelectorAll('.comp').forEach(el => el.classList.remove('hot'));
+  cpu.hot.forEach(id => { const el = $('c-' + id); if (el) el.classList.add('hot'); });
+
+  // phase pills and the "now" box
+  ['FETCH', 'DECODE', 'EXECUTE'].forEach(p => {
+    $('pill-' + p).classList.toggle('active', cpu.phase === p && !cpu.halted);
+  });
+  const now = $('now');
+  now.className = 'now ' + cpu.phase;
+  now.innerHTML = '<div class="op mono"></div><div class="detail"></div>';
+  now.children[0].textContent = cpu.nowOp;
+  now.children[1].textContent = cpu.nowDetail;
+
+  // status and statistics
+  const status = $('status');
+  if (cpu.error) { status.textContent = 'Error: ' + cpu.error; status.className = 'err'; }
+  else if (cpu.halted) { status.textContent = 'Halted'; status.className = ''; }
+  else if (timer) { status.textContent = 'Running'; status.className = ''; }
+  else { status.textContent = cpu.cycles === 0 ? 'Ready' : 'Paused'; status.className = ''; }
+  $('s-cycles').textContent = cpu.cycles;
+  $('s-instr').textContent = cpu.instr;
+  $('s-cpi').textContent = cpu.instr > 0 ? (cpu.cycles / cpu.instr).toFixed(2) : '-';
+
+  // output box
+  $('output').textContent = cpu.out.length ? cpu.out.join('   ') : '-';
+
+  // memory table
+  const body = $('memBody');
+  let html = '';
+  for (let i = 0; i < memSize; i++) {
+    const classes = [];
+    if (i === cpu.PC && !cpu.halted) classes.push('pc');
+    if (i === cpu.MAR && cpu.cycles > 0) classes.push('mar');
+    if (i === cpu.written) classes.push('written');
+    html += '<tr class="' + classes.join(' ') + '"><td>' + i + '</td><td class="mono">' +
+            fmt(cpu.mem[i]) + '</td><td class="mono">' + meaning(cpu.mem[i], i) + '</td></tr>';
+  }
+  body.innerHTML = html;
+
+  // keep the PC row visible
+  const row = body.children[Math.min(cpu.PC, memSize - 1)];
+  const box = $('memBox');
+  if (row) box.scrollTop = Math.max(0, row.offsetTop - box.clientHeight / 2);
+
+  $('c-MEM').classList.toggle('hot', cpu.hot.includes('MEM'));
+}
+
+/* =====================================================================
+   (f) BUTTONS
+   ===================================================================== */
+function showMessage(text, kind) {
+  const m = $('msg');
+  m.textContent = text;
+  m.className = kind;
+}
+
+function loadProgram() {
+  memSize = Number($('memSize').value);
+  const result = assemble($('code').value, memSize);
+  if (result.error) {
+    showMessage(result.error, 'error');
+    return;
+  }
+  image = result.image;
+  progLen = result.progLen;
+  showMessage('Program loaded: ' + progLen + ' instructions in memory.', 'ok');
+  resetCPU();
+}
+
+function stepInstruction() {
+  if (cpu.halted) return;
+  stopRun();
+  do {
+    if (!microStep()) break;
+  } while (cpu.queue.length > 0 && !cpu.halted);
+}
+
+function runDelay() { return 1100 - Number($('speed').value) * 100; }
+
+function startRun() {
+  if (cpu.halted) return;
+  $('runBtn').textContent = 'Pause';
+  timer = setInterval(() => { if (!microStep()) stopRun(); }, runDelay());
+}
+
+function stopRun() {
+  if (timer) { clearInterval(timer); timer = null; }
+  $('runBtn').textContent = 'Run';
+  if (cpu) render();
+}
+
+// ---- connect the buttons ----
+$('stepBtn').onclick = () => { stopRun(); microStep(); };
+$('instrBtn').onclick = stepInstruction;
+$('runBtn').onclick = () => { if (timer) stopRun(); else startRun(); };
+$('resetBtn').onclick = () => resetCPU();
+$('loadBtn').onclick = loadProgram;
+$('memSize').onchange = loadProgram;
+$('radix').onchange = () => render();
+$('speed').oninput = () => {
+  $('speedLabel').textContent = $('speed').value;
+  if (timer) { stopRun(); startRun(); }
+};
+$('example').onchange = () => {
+  if ($('example').value === CUSTOM) return;   // "Custom" is only a label
+  $('code').value = EXAMPLES[$('example').value];
+  loadProgram();
+};
+
+// When you edit the program text, load it automatically (no need to press the
+// Load button) and mark the dropdown as "Custom" so it no longer shows the old example name.
+let typingTimer = null;
+$('code').addEventListener('input', () => {
+  const customOpt = $('example').querySelector('option[value="' + CUSTOM + '"]');
+  customOpt.hidden = false;
+  $('example').value = CUSTOM;
+  clearTimeout(typingTimer);
+  typingTimer = setTimeout(loadProgram, 400);   // wait until you stop typing
+});
+
+// ---- start-up ----
+Object.keys(EXAMPLES).forEach(name => {
+  const opt = document.createElement('option');
+  opt.textContent = name;
+  $('example').appendChild(opt);
+});
+const customOption = document.createElement('option');
+customOption.value = CUSTOM;
+customOption.textContent = 'Custom (edited by you)';
+customOption.hidden = true;                      // shown after you edit the program
+$('example').appendChild(customOption);
+$('example').value = Object.keys(EXAMPLES)[0];
+$('code').value = EXAMPLES[Object.keys(EXAMPLES)[0]];
+loadProgram();
+</script>
+</body>
+</html>
